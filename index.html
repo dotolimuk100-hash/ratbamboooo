@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no"/>
+<title>악-!!한 쥐의 대나무숲</title>
+<link href="https://cdn.jsdelivr.net/npm/galmuri/dist/galmuri.css" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#2d5030;font-family:'Galmuri11',monospace;}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;pointer-events:none;}
+
+#top-left-container {
+  position: absolute; top: 20px; left: 20px; z-index: 100;
+  display: flex; align-items: center; gap: 10px;
+}
+#top-left-ui { font-size: 28px; cursor: pointer; user-select: none; transition: transform 0.1s; }
+#top-left-ui:active { transform: scale(0.9); }
+#volSlider { width: 80px; accent-color: #ffd700; cursor: pointer; }
+#top-right-ui {
+  position: absolute; top: 20px; right: 20px; z-index: 100;
+  text-align: right; color: rgba(255,255,255,0.9); font-size: 16px; font-weight: bold;
+  text-shadow: 2px 2px 0 rgba(0,0,0,0.5); pointer-events: none;
+}
+.credit-text { font-size: 11px; opacity: 0.7; margin-top: 4px; font-weight: normal; }
+
+.ui{
+  position:absolute; bottom:60px; left:0; right:0; z-index:50;
+  display:flex; flex-direction:column; align-items:center; gap:20px;
+}
+.input-row{
+  display:flex; align-items:center; gap:8px;
+  width:min(420px,calc(100vw - 32px));
+}
+.scream-input{
+  flex:1; background:rgba(255,255,255,0.9);
+  border:3px solid #000; border-radius:8px; height:50px;
+  color:#111; font-family:'Galmuri11',monospace; font-size:16px; font-weight:bold;
+  padding:0 16px; outline:none; text-align:center;
+  box-shadow:0 4px 0 rgba(0,0,0,0.5);
+  /* 모바일 입력 허용 */
+  touch-action:auto;
+  pointer-events:auto;
+  -webkit-user-select:text;
+  user-select:text;
+  cursor:text;
+}
+.scream-input::placeholder{color:rgba(0,0,0,0.4); font-weight:normal;}
+
+.hold-btn-wrap{ width:min(420px,calc(100vw - 32px)); position:relative; }
+.hold-btn{
+  width:100%; height:56px; background:#538a42;
+  border:3px solid #000; border-radius:12px;
+  color:#fff; font-family:'Galmuri11',monospace; font-size:18px; font-weight:900;
+  cursor:pointer; user-select:none; text-align:center;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 6px 0 #1f4216; transition:transform 0.1s, box-shadow 0.1s;
+  touch-action:none; /* 버튼만 touch 막기 */
+  pointer-events:auto;
+}
+.hold-btn.pressed{ transform:translateY(6px); box-shadow:0 0px 0 #1f4216; }
+
+.gauge-bar-bg{
+  position:absolute; left:0; right:0; top:-14px; height:8px;
+  background:rgba(0,0,0,0.6); border:2px solid #000; border-radius:4px;
+  overflow:hidden; opacity:0; transition:opacity 0.2s; pointer-events:none;
+}
+.gauge-bar-bg.show { opacity:1; }
+.gauge-bar-fill{
+  height:100%; background:linear-gradient(90deg,#ffd700,#ff4500);
+  width:0%; transform-origin:left;
+}
+</style>
+</head>
+<body>
+
+<div id="top-left-container">
+  <div id="top-left-ui">🔊</div>
+  <input type="range" id="volSlider" min="0" max="1" step="0.01" value="0.2">
+</div>
+<div id="top-right-ui">
+  @grevocado<br>
+  <div class="credit-text">BGM: geoffharvey</div>
+</div>
+
+<canvas id="c"></canvas>
+<audio id="realBgm" loop autoplay src="geoffharvey-silly-jazz-quirky-427913.mp3" preload="auto"></audio>
+
+<div class="ui">
+  <div class="input-row">
+    <input class="scream-input" id="inp" type="text" maxlength="40"
+      placeholder="외치고 싶은 말을 적어봐요"
+      autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+  </div>
+  <div class="hold-btn-wrap">
+    <div class="gauge-bar-bg" id="gaugeBg">
+      <div class="gauge-bar-fill" id="gaugeFill"></div>
+    </div>
+    <div class="hold-btn" id="holdBtn">여기를 꾹 누르다 떼보세요!</div>
+  </div>
+</div>
+
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+const inp=document.getElementById('inp');
+const holdBtn=document.getElementById('holdBtn');
+const gaugeBg=document.getElementById('gaugeBg');
+const gaugeFill=document.getElementById('gaugeFill');
+const realBgm=document.getElementById('realBgm');
+const muteBtn=document.getElementById('top-left-ui');
+const volSlider=document.getElementById('volSlider');
+
+let W,H,groundY;
+
+const FB_URL='https://aahkratforest-default-rtdb.firebaseio.com';
+const MAX_TICKER=50;
+
+async function saveScream(text){
+  try{
+    await fetch(`${FB_URL}/screams.json`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text,ts:Date.now()})
+    });
+  }catch(e){console.warn('Firebase 저장 실패:',e);}
+}
+async function loadScreams(){
+  try{
+    const res=await fetch(`${FB_URL}/screams.json?orderBy="ts"&limitToLast=30`);
+    if(!res.ok) return [];
+    const data=await res.json();
+    if(!data) return [];
+    return Object.values(data).sort((a,b)=>a.ts-b.ts).map(d=>d.text).filter(t=>t&&t.trim().length>0);
+  }catch(e){return [];}
+}
+function subscribeScreams(onNew){
+  try{
+    const es=new EventSource(`${FB_URL}/screams.json?orderBy="ts"&limitToLast=1`);
+    const handle=(e)=>{
+      try{
+        const data=JSON.parse(e.data);
+        if(data&&data.data){
+          const items=typeof data.data==='object'?Object.values(data.data):[data.data];
+          items.forEach(item=>{if(item&&item.text)onNew(item.text);});
+        }
+      }catch(_){}
+    };
+    es.addEventListener('put',handle);
+    es.addEventListener('patch',handle);
+  }catch(e){}
+}
+
+let tickerPool=["날집에보내줘","아아아아악!!","다싫어어어!!","살려줘어어어","똥먹어","퇴근하고싶다"];
+let nextTickerIndex=0,activeTickers=[];
+
+loadScreams().then(screams=>{
+  if(screams.length>0) tickerPool=[...screams,...tickerPool.slice(0,3)];
+});
+subscribeScreams(text=>{
+  if(!tickerPool.includes(text)){
+    tickerPool.unshift(text);
+    if(tickerPool.length>MAX_TICKER) tickerPool.pop();
+  }
+});
+
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=W; cv.height=H;
+  groundY=H-206;
+  generateBamboos(); initFallingLeaves();
+  title.x=W/2; title.baseY=H*0.18;
+  if(st.mouseC.state==='idle'){st.mouseC.x=W/2;st.mouseC.y=groundY-20;}
+}
+
+const st={
+  isCharging:false,charge:0,actualHoldTime:0,time:0,lastT:0,
+  screams:[],userText:'',lastShout:'',rumble:0,timeSinceNoScreams:0,
+  fallingLeaves:[],isMuted:false,bgmVolume:0.2,
+  mouseC:{x:0,y:0,vx:0,vy:0,rot:0,state:'idle',relievedTimer:0,heldSeconds:0,idleTimer:0}
+};
+const title={x:0,y:0,baseY:0,vy:0,targetOffset:0};
+let mouseInput={x:-1000,y:-1000};
+window.addEventListener('mousemove',e=>{mouseInput.x=e.clientX;mouseInput.y=e.clientY;});
+window.addEventListener('touchmove',e=>{
+  // 입력창 터치면 무시
+  if(e.target===inp) return;
+  mouseInput.x=e.touches[0].clientX;mouseInput.y=e.touches[0].clientY;
+},{passive:true});
+
+function applyVolume(){
+  if(st.bgmVolume<=0){st.isMuted=true;muteBtn.innerText='🔇';realBgm.muted=true;}
+  else{st.isMuted=false;muteBtn.innerText='🔊';realBgm.muted=false;}
+  realBgm.volume=st.bgmVolume;
+  // audioCtx, 옹알이는 isMuted 영향 안 받게 — playAnimalese에서 isMuted 체크 제거
+}
+muteBtn.addEventListener('click',()=>{
+  if(st.isMuted){st.bgmVolume=volSlider.value>0?parseFloat(volSlider.value):0.2;volSlider.value=st.bgmVolume;}
+  else{st.bgmVolume=0;volSlider.value=0;}
+  applyVolume();
+  // audioCtx는 건드리지 않음 — 옹알이 소리는 항상 켜져 있게
+});
+volSlider.addEventListener('input',e=>{st.bgmVolume=parseFloat(e.target.value);applyVolume();});
+
+let audioCtx,isAudioStarted=false;
+function initAudio(){
+  if(isAudioStarted) return;
+  isAudioStarted=true;
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC) return;
+  audioCtx=new AC();
+  applyVolume();
+  realBgm.play().catch(()=>playGenerativeNatureBGM());
+}
+window.addEventListener('pointerdown',()=>initAudio(),{once:true});
+window.addEventListener('keydown',()=>initAudio(),{once:true});
+
+function playGenerativeNatureBGM(){
+  const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*2,audioCtx.sampleRate);
+  const data=buf.getChannelData(0);
+  for(let i=0;i<data.length;i++) data[i]=(Math.random()*2-1)*0.1;
+  const src=audioCtx.createBufferSource();
+  src.buffer=buf;src.loop=true;
+  const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=200;
+  const g=audioCtx.createGain();g.gain.value=0.3;
+  src.connect(f);f.connect(g);g.connect(audioCtx.destination);src.start();
+}
+
+function playAnimalese(text,isEcho=false){
+  if(!audioCtx) return;
+  if(audioCtx.state==='suspended') audioCtx.resume();
+  const len=Math.min(text.length,15);
+  let t=audioCtx.currentTime+(isEcho?0.3:0);
+  for(let i=0;i<len;i++){
+    if(text[i]===' '){t+=0.05;continue;}
+    const osc=audioCtx.createOscillator();
+    const flt=audioCtx.createBiquadFilter();
+    const g=audioCtx.createGain();
+    osc.type='sawtooth';
+    const pv=(text.charCodeAt(i)%20)/20;
+    const bf=isEcho?(800+pv*400):(1100+pv*500);
+    osc.frequency.setValueAtTime(bf,t);
+    osc.frequency.exponentialRampToValueAtTime(bf*0.7,t+0.05);
+    flt.type='bandpass';flt.frequency.value=2000;flt.Q.value=4;
+    const mv=isEcho?0.15:0.5;
+    g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(mv,t+0.01);
+    g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+    osc.connect(flt);flt.connect(g);g.connect(audioCtx.destination);
+    osc.start(t);osc.stop(t+0.1);
+    t+=0.055+Math.random()*0.01;
+  }
+}
+
+let bamboos=[];
+function generateBamboos(){
+  bamboos=[];
+  const count=Math.floor(W/45);
+  for(let i=0;i<count;i++){
+    const b={x:Math.random()*W,w:10+Math.random()*12,
+      color:`rgb(${30+Math.random()*20},${110+Math.random()*40},${30+Math.random()*20})`,
+      depth:Math.random(),nodes:[]};
+    let y=groundY;
+    while(y>-50){y-=50+Math.random()*40;b.nodes.push(y);}
+    bamboos.push(b);
+  }
+  bamboos.sort((a,b)=>a.depth-b.depth);
+}
+
+function initFallingLeaves(){
+  st.fallingLeaves=[];
+  for(let i=0;i<15;i++) st.fallingLeaves.push(createLeaf(true));
+}
+function createLeaf(randY=false){
+  return{x:Math.random()*W,y:randY?Math.random()*groundY:-20,
+    vx:(Math.random()-0.5)*20,vy:30+Math.random()*40,
+    size:4+Math.random()*4,phase:Math.random()*Math.PI*2,
+    swaySpeed:1+Math.random()*2,swayAmt:20+Math.random()*30,
+    rot:Math.random()*Math.PI,rotSpeed:(Math.random()-0.5)*2};
+}
+
+function spawnTicker(startX){
+  if(!tickerPool.length) return;
+  const txt=tickerPool[nextTickerIndex%tickerPool.length];
+  ctx.font=`14px 'Galmuri11'`;
+  const totalW=120+ctx.measureText(txt).width+80;
+  activeTickers.push({txt,x:startX,w:totalW});
+  nextTickerIndex++;
+}
+
+// ── 버튼 이벤트 — 입력창은 건드리지 않음 ──
+let isHolding=false;
+
+function startCharge(e){
+  // 입력창 클릭이면 무시
+  if(e.target===inp) return;
+  if(e.cancelable) e.preventDefault();
+  initAudio();
+  if(!inp.value.trim()) inp.value='날집에보내줘날집에본내줘날';
+  st.userText=inp.value;
+  st.isCharging=true;st.charge=0;st.actualHoldTime=0;
+  st.mouseC.state='charging';
+  st.mouseC.x=W/2;st.mouseC.y=groundY-20;
+  st.mouseC.vx=0;st.mouseC.vy=0;st.mouseC.rot=0;
+  gaugeBg.classList.add('show');
+  holdBtn.classList.add('pressed');
+  holdBtn.innerText='숨 참는 중...';
+  isHolding=true;
+}
+
+function stopCharge(e){
+  if(!isHolding) return;
+  if(!st.isCharging) return;
+  isHolding=false;
+  st.isCharging=false;
+  gaugeBg.classList.remove('show');
+  holdBtn.classList.remove('pressed');
+  holdBtn.innerText='여기를 꾹 누르다 떼보세요!';
+  st.mouseC.heldSeconds=st.actualHoldTime;
+  const power=Math.min((st.charge/100)*0.2+(st.actualHoldTime/10)*0.8,1.0);
+  if(power>0.02){
+    fireScream(power);
+    playAnimalese(st.userText,false);
+    playAnimalese(st.userText,true);
+    if(st.userText!==st.lastShout){
+      saveScream(st.userText);
+      if(!tickerPool.includes(st.userText)) tickerPool.unshift(st.userText);
+      st.lastShout=st.userText;
+    }
+  } else {
+    st.mouseC.state='idle';st.mouseC.idleTimer=0;
+  }
+  st.charge=0;st.actualHoldTime=0;gaugeFill.style.width='0%';
+}
+
+// 버튼에만 이벤트 — window 전역 touchend 제거
+holdBtn.addEventListener('mousedown',startCharge);
+holdBtn.addEventListener('touchstart',e=>{
+  e.preventDefault(); // 버튼만
+  startCharge(e);
+},{passive:false});
+
+document.addEventListener('mouseup',stopCharge);
+document.addEventListener('touchend',e=>{
+  // 입력창 터치면 무시
+  if(e.target===inp) return;
+  stopCharge(e);
+},{passive:true});
+
+function fireScream(p){
+  const cx=st.mouseC.x,cy=st.mouseC.y-30;
+  const pC=Math.pow(p,2);
+  st.rumble=Math.min(5+pC*60,40);
+  st.mouseC.state='bouncing';
+  st.mouseC.vy=-200-pC*800;
+  st.mouseC.vx=(Math.random()-0.5)*pC*1000;
+  st.mouseC.rot=(Math.random()-0.5);
+  const lf=Math.max(1,st.userText.length/5);
+
+  st.screams.push({txt:st.userText,x:cx,y:cy,
+    vx:(Math.random()-0.5)*(50+pC*300),vy:-200-pC*1200,
+    size:20+pC*180,alpha:1.2,decay:0.5-p*0.35,isMain:true,scale:0.1});
+
+  const ec=Math.floor((pC*25)/lf);
+  for(let i=1;i<=ec;i++){
+    setTimeout(()=>{
+      const a=Math.random()*Math.PI*2,spd=200+pC*1400;
+      st.screams.push({txt:st.userText,
+        x:cx+Math.cos(a)*50,y:cy+Math.sin(a)*50,
+        vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,
+        size:(15+pC*100)*(1-(i/(ec||1))*0.2),
+        alpha:0.8-(i/(ec||1))*0.2,
+        decay:0.5-p*0.3,isMain:false,scale:0.5});
+    },i*(100-p*80));
+  }
+
+  const dc=Math.floor((1+pC*40)/lf);
+  const words=['으아악!','크악!','악!','헉!','쾅!!'];
+  for(let i=0;i<dc;i++){
+    const a=Math.random()*Math.PI*2,spd=100+Math.random()*1200*pC;
+    st.screams.push({txt:words[Math.floor(Math.random()*words.length)],
+      x:cx,y:cy,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,
+      size:10+Math.random()*60*pC,alpha:1.0+pC*0.5,
+      decay:0.7-pC*0.5,isMain:false,scale:1.0,
+      rot:(Math.random()-0.5)*(0.1+pC*0.4)});
+  }
+}
+
+function updatePhysics(dt){
+  if(realBgm&&!realBgm.paused&&!st.isMuted){
+    const mv=st.bgmVolume,dur=realBgm.duration,cur=realBgm.currentTime;
+    if(!isNaN(dur)&&dur>0){
+      if(dur-cur<3) realBgm.volume=Math.max(0,(dur-cur)/3)*mv;
+      else if(cur<3) realBgm.volume=Math.min(1,cur/3)*mv;
+      else realBgm.volume=mv;
+    }
+  }
+
+  st.fallingLeaves.forEach(l=>{
+    l.y+=l.vy*dt;l.phase+=l.swaySpeed*dt;l.rot+=l.rotSpeed*dt;
+    if(l.y>groundY+20) Object.assign(l,createLeaf(false));
+  });
+
+  if(activeTickers.length===0) spawnTicker(W);
+  let last=activeTickers[activeTickers.length-1];
+  while(last.x+last.w<W+100){spawnTicker(last.x+last.w);last=activeTickers[activeTickers.length-1];}
+  activeTickers.forEach(t=>t.x-=80*dt);
+  if(activeTickers[0].x+activeTickers[0].w<0) activeTickers.shift();
+
+  if(st.isCharging){
+    st.actualHoldTime+=dt;
+    if(st.charge<100){st.charge+=150*dt;if(st.charge>100)st.charge=100;}
+    gaugeFill.style.width=`${st.charge}%`;
+    let red=255,green=215-(st.charge*2.15);
+    if(st.actualHoldTime>0.6){red=Math.max(100,255-(st.actualHoldTime/10)*150);green=0;}
+    holdBtn.innerText=`숨 참는 중... (${Math.floor(st.actualHoldTime)}초)`;
+    gaugeFill.style.background=`linear-gradient(90deg,#ffd700,rgb(${red},${Math.max(0,green)},0))`;
+  }
+
+  if(st.screams.length===0&&st.mouseC.state!=='bouncing'){
+    st.timeSinceNoScreams+=dt;
+    if(st.timeSinceNoScreams>2) st.rumble=0;
+    else st.rumble=Math.max(0,st.rumble-dt*20);
+  }else{st.timeSinceNoScreams=0;st.rumble=Math.max(0,st.rumble-dt*30);}
+
+  const floatY=Math.sin(st.time*2)*10;
+  const dx=mouseInput.x-title.x,dy=mouseInput.y-(title.baseY+floatY+title.y);
+  title.targetOffset=Math.sqrt(dx*dx+dy*dy)<100?-40:0;
+  title.vy+=(title.targetOffset-title.y)*0.2;title.vy*=0.85;title.y+=title.vy;
+
+  const mc=st.mouseC;
+  if(mc.state==='idle') mc.idleTimer+=dt;
+  if(mc.state==='bouncing'){
+    mc.vy+=1500*dt;mc.x+=mc.vx*dt;mc.y+=mc.vy*dt;mc.rot+=mc.vx*0.005*dt;
+    if(mc.x<15){mc.x=15;mc.vx*=-0.7;st.rumble=Math.min(st.rumble+10,30);}
+    if(mc.x>W-15){mc.x=W-15;mc.vx*=-0.7;st.rumble=Math.min(st.rumble+10,30);}
+    if(mc.y>groundY-20){
+      mc.y=groundY-20;mc.vy*=-0.6;mc.vx*=0.85;
+      st.rumble=Math.min(st.rumble+Math.abs(mc.vy)*0.02,20);
+      if(Math.abs(mc.vy)<60){mc.state='rolling';mc.vy=0;}
+    }
+  }else if(mc.state==='rolling'){
+    const dist=W/2-mc.x;mc.vx=dist*2.5;mc.x+=mc.vx*dt;mc.rot+=mc.vx*0.01*dt;
+    if(Math.abs(dist)<3){mc.x=W/2;mc.vx=0;mc.rot=0;mc.state='relieved';mc.relievedTimer=2.0;}
+  }else if(mc.state==='relieved'){
+    mc.relievedTimer-=dt;if(mc.relievedTimer<=0){mc.state='idle';mc.idleTimer=0;}
+  }
+
+  for(let i=st.screams.length-1;i>=0;i--){
+    const s=st.screams[i];
+    s.x+=s.vx*dt;s.y+=s.vy*dt;s.alpha-=s.decay*dt;
+    if(s.scale<1.0)s.scale+=dt*5;
+    if(s.rot)s.rot+=s.vx*0.001*dt;
+    let bounced=false;
+    const pad=s.size*0.4;
+    if(s.x<pad){s.x=pad;s.vx=Math.abs(s.vx)*0.95;bounced=true;}
+    else if(s.x>W-pad){s.x=W-pad;s.vx=-Math.abs(s.vx)*0.95;bounced=true;}
+    if(s.y<pad){s.y=pad;s.vy=Math.abs(s.vy)*0.95;bounced=true;}
+    if(s.y>groundY-pad){s.y=groundY-pad;s.vy=-Math.abs(s.vy)*0.7;bounced=true;}
+    if(bounced){
+      const sq=s.vx*s.vx+s.vy*s.vy;
+      if(sq>500000&&s.txt.length>1&&!s.isMain&&st.screams.length<80){
+        st.screams.push({txt:s.txt.substring(0,1),x:s.x,y:s.y,
+          vx:s.vx*0.5+(Math.random()-0.5)*800,vy:s.vy*0.5+(Math.random()-0.5)*800,
+          size:s.size*0.7,alpha:s.alpha,decay:s.decay*1.2,
+          isMain:false,scale:s.scale,rot:(Math.random()-0.5)*2.0});
+        s.txt=s.txt.substring(1);
+      }else{s.alpha-=0.05;}
+      st.rumble=Math.min(st.rumble+(s.size*0.05),30);
+    }
+    if(s.alpha<=0)st.screams.splice(i,1);
+  }
+}
+
+function drawMouseChar(mc){
+  const S=4;ctx.save();ctx.translate(mc.x,mc.y);
+  let scale=1,isRed=false,isStraining=false;
+  if(mc.state==='charging'){
+    const cr=st.charge/100;
+    if(cr>0)scale=1+(cr*0.15);
+    if(st.actualHoldTime>0.6){
+      isStraining=true;
+      scale=1.15+Math.min(st.actualHoldTime/10,1.0)*0.25;
+      const sh=Math.min(st.actualHoldTime,10)*1.5;
+      ctx.translate((Math.random()-0.5)*sh,(Math.random()-0.5)*sh);
+      if(st.actualHoldTime>=8)isRed=true;
+    }
+  }
+  ctx.scale(scale,scale);ctx.rotate(mc.rot);
+  let bobY=0,armMove=0;
+  if(mc.state==='idle'){bobY=Math.abs(Math.sin(st.time*6))*2;armMove=Math.sin(st.time*6)*2;}
+  ctx.translate(0,-bobY);
+  const px=(gx,gy,w,h,c)=>{ctx.fillStyle=c;ctx.fillRect(gx*S,gy*S,w*S,h*S);};
+  const body=isRed?'#ff4444':'#e0e0e0',ol='#5c5c5c',wh='#222',pink='#ffaebb';
+  px(-7,-10,4,4,ol);px(-6,-9,2,2,pink);
+  px(3,-10,4,4,ol);px(4,-9,2,2,pink);
+  px(-5,-6,10,10,ol);px(-4,-5,8,8,body);
+  px(-2,0,4,3,isRed?'#ffaaaa':'#fff');
+  if(mc.state==='relieved'){
+    px(-3,-3,2,1,ol);px(1,-3,2,1,ol);
+    ctx.fillStyle='#ff6688';
+    ctx.fillRect(-4*S,-1*S,1.5*S,1*S);ctx.fillRect(2.5*S,-1*S,1.5*S,1*S);
+  }else if(isStraining){
+    px(-3,-3,2,1,ol);px(-2,-2,1,1,ol);px(1,-3,2,1,ol);px(1,-2,1,1,ol);
+    ctx.fillStyle=`rgba(255,0,0,${Math.min(st.actualHoldTime/5,0.8)})`;
+    ctx.fillRect(-4*S,-1*S,1.5*S,1*S);ctx.fillRect(2.5*S,-1*S,1.5*S,1*S);
+  }else if(mc.state==='bouncing'||mc.state==='rolling'){
+    px(-3,-3,2,2,ol);px(-2,-2,1,1,'#fff');px(1,-3,2,2,ol);px(2,-2,1,1,'#fff');
+  }else{px(-3,-3,1,1,ol);px(2,-3,1,1,ol);}
+  px(-1,-1,2,2,isRed?'#ffaaaa':'#fff');px(0,-1,1,1,wh);
+  px(-7,-1,2,0.5,wh);px(-7,0,2,0.5,wh);px(5,-1,2,0.5,wh);px(5,0,2,0.5,wh);
+  px(-8,3,3,1,ol);px(-9,1,1,2,ol);
+  let lAY=0,rAY=0;
+  if(mc.state==='idle'){lAY=armMove>0?-1:0;rAY=armMove<0?-1:0;}
+  px(-6,0+lAY,1,2,ol);px(5,0+rAY,1,2,ol);
+  px(-3,4+(bobY/S),2,1,ol);px(1,4+(bobY/S),2,1,ol);
+  ctx.restore();
+}
+
+function drawSpeechBubble(mc){
+  if(mc.state!=='idle'&&mc.state!=='relieved')return;
+  let text='대신 악! 하고 소리 질러줄게요';
+  if(mc.state==='relieved'||(mc.state==='idle'&&mc.heldSeconds>0&&mc.idleTimer<2.0)){
+    text=`${mc.heldSeconds.toFixed(1)}초 묵힌 외침이었어요!`;
+  }
+  ctx.font=`12px 'Galmuri11',monospace`;
+  const tw=ctx.measureText(text).width;
+  const bw=tw+20,bh=24,bx=mc.x-bw/2,by=mc.y-75;
+  const float=Math.sin(st.time*3)*3;
+  ctx.save();ctx.translate(0,float);
+  ctx.fillStyle='#fff';ctx.strokeStyle='#000';ctx.lineWidth=2;
+  ctx.fillRect(bx,by,bw,bh);ctx.strokeRect(bx,by,bw,bh);
+  ctx.beginPath();ctx.moveTo(mc.x-5,by+bh);ctx.lineTo(mc.x+5,by+bh);ctx.lineTo(mc.x,by+bh+8);
+  ctx.fill();ctx.stroke();ctx.fillRect(mc.x-4,by+bh-2,8,4);
+  ctx.fillStyle='#000';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(text,mc.x,by+bh/2+2);
+  ctx.restore();
+}
+
+function render(now){
+  const dt=Math.min(0.05,(now-st.lastT)/1000);
+  st.lastT=now;st.time+=dt;
+  updatePhysics(dt);
+
+  let rB=45,gB=80,bB=48;
+  if(st.actualHoldTime>0){
+    const pH=Math.min(st.actualHoldTime/10,1.0);
+    rB=45+(pH*100);gB=80-(pH*50);bB=48-(pH*30);
+  }
+  ctx.fillStyle=`rgb(${rB},${gB},${bB})`;ctx.fillRect(0,0,W,H);
+
+  ctx.save();
+  let shake=st.rumble;
+  if(st.actualHoldTime>0&&st.isCharging)shake+=Math.min(st.actualHoldTime/10,1.0)*15;
+  if(shake>0)ctx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);
+
+  bamboos.forEach(b=>{
+    ctx.fillStyle=b.color;ctx.fillRect(b.x,0,b.w,groundY);
+    ctx.fillStyle='rgba(0,0,0,0.3)';
+    b.nodes.forEach(ny=>ctx.fillRect(b.x-2,ny,b.w+4,3));
+  });
+
+  st.fallingLeaves.forEach(l=>{
+    const lx=l.x+Math.sin(l.phase)*l.swayAmt;
+    ctx.save();ctx.translate(lx,l.y);ctx.rotate(l.rot);
+    ctx.fillStyle='rgba(90,150,60,0.8)';
+    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(l.size,-l.size/2);ctx.lineTo(l.size*2,0);ctx.lineTo(l.size,l.size/2);
+    ctx.fill();ctx.restore();
+  });
+
+  if(st.actualHoldTime>0&&st.isCharging){
+    ctx.fillStyle=`rgba(0,0,0,${Math.min(st.actualHoldTime/10,1.0)*0.6})`;
+    ctx.fillRect(0,0,W,H);
+  }
+  ctx.fillStyle='#1c2b1c';ctx.fillRect(0,groundY,W,H-groundY);
+  ctx.restore();
+
+  ctx.save();
+  const floatY=Math.sin(st.time*2)*10;
+  ctx.translate(title.x,title.baseY+floatY+title.y);
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.lineWidth=6;ctx.strokeStyle='#000';ctx.fillStyle='#fff';
+  ctx.font=`900 24px 'Galmuri11'`;
+  ctx.strokeText('악-!!한 쥐의',0,-32);ctx.fillText('악-!!한 쥐의',0,-32);
+  ctx.font=`900 56px 'Galmuri11'`;
+  ctx.strokeText('대나무숲',0,15);ctx.fillText('대나무숲',0,15);
+  ctx.restore();
+
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  st.screams.forEach(s=>{
+    ctx.save();
+    ctx.translate(s.x,s.y);if(s.rot)ctx.rotate(s.rot);
+    const ds=s.size*Math.min(s.scale,1.0);
+    ctx.font=`900 ${ds}px 'Galmuri11'`;
+    ctx.globalAlpha=Math.max(0,s.alpha);
+    ctx.lineWidth=s.isMain?8:4;ctx.strokeStyle='#000';ctx.strokeText(s.txt,0,0);
+    ctx.fillStyle=s.isMain?'#fffbeb':'#fff';ctx.fillText(s.txt,0,0);
+    ctx.restore();
+  });
+
+  drawMouseChar(st.mouseC);
+  drawSpeechBubble(st.mouseC);
+
+  ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(0,H-40,W,40);
+  ctx.beginPath();ctx.moveTo(0,H-40);ctx.lineTo(W,H-40);
+  ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.lineWidth=1;ctx.stroke();
+  ctx.textAlign='left';ctx.textBaseline='middle';
+  activeTickers.forEach(t=>{
+    ctx.font=`bold 14px 'Galmuri11'`;ctx.fillStyle='#ffd700';
+    ctx.fillText('[누군가의 외침]',t.x,H-20);
+    ctx.font=`14px 'Galmuri11'`;ctx.fillStyle='#eee';
+    ctx.fillText(t.txt,t.x+120,H-20);
+  });
+
+  requestAnimationFrame(render);
+}
+
+window.addEventListener('resize',resize);
+resize();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
